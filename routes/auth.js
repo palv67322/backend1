@@ -8,10 +8,18 @@ import auth from '../middleware/auth.js';
 
 const router = express.Router();
 
+// Password validation regex: at least 6 characters, including 1 letter, 1 number
+const passwordRegex = /^(?=.*[A-Za-z])(?=.*\d)[A-Za-z\d]{6,}$/;
+
 // Register
 router.post('/register', async (req, res) => {
   const { name, email, password, role } = req.body;
   try {
+    if (!passwordRegex.test(password)) {
+      console.log(`Registration failed: Invalid password for ${email}`);
+      return res.status(400).json({ message: 'Password must be at least 6 characters with at least one letter and one number' });
+    }
+
     let user = await User.findOne({ email });
     if (user) {
       console.log(`Registration failed: User already exists for email ${email}`);
@@ -19,6 +27,8 @@ router.post('/register', async (req, res) => {
     }
 
     user = new User({ name, email, password, role });
+    const salt = await bcrypt.genSalt(10);
+    user.password = await bcrypt.hash(password, salt);
     await user.save();
     console.log(`User created: ${user._id}, role: ${role}`);
 
@@ -34,7 +44,7 @@ router.post('/register', async (req, res) => {
           services: [],
           certifications: [],
           availability: [],
-          photo: 'https://via.placeholder.com/150',
+          photo: null // Default to null; upload handled separately
         });
         await provider.save();
         console.log(`Provider created for user ${user._id}: ${provider._id}`);
@@ -100,7 +110,7 @@ router.post('/create-provider', auth, async (req, res) => {
       services: [],
       certifications: [],
       availability: [],
-      photo: 'https://via.placeholder.com/150',
+      photo: null // Default to null; upload handled separately
     });
     await provider.save();
     console.log(`Provider created for existing user ${user._id}: ${provider._id}`);
@@ -116,6 +126,7 @@ router.post('/create-provider', auth, async (req, res) => {
 router.post('/login', async (req, res) => {
   const { email, password } = req.body;
   try {
+    console.log(`Login attempt for ${email}`);
     const user = await User.findOne({ email });
     if (!user) {
       console.log(`Login failed: No user found for email ${email}`);
@@ -216,7 +227,10 @@ router.post('/forgot-password', async (req, res) => {
   try {
     const { email } = req.body;
     const user = await User.findOne({ email });
-    if (!user) return res.status(404).json({ message: 'User not found' });
+    if (!user) {
+      console.log(`User not found for forgot password: ${email}`);
+      return res.status(404).json({ message: 'User not found' });
+    }
 
     const otp = Math.floor(100000 + Math.random() * 900000).toString();
     user.resetPasswordOTP = otp;
@@ -242,13 +256,18 @@ router.post('/forgot-password', async (req, res) => {
 router.post('/verify-otp', async (req, res) => {
   try {
     const { email, otp } = req.body;
+    console.log(`Verifying OTP for ${email}: ${otp}`);
     const user = await User.findOne({
       email,
       resetPasswordOTP: otp,
       resetPasswordExpires: { $gt: Date.now() },
     });
-    if (!user) return res.status(400).json({ message: 'Invalid or expired OTP' });
+    if (!user) {
+      console.log(`Invalid or expired OTP for ${email}: ${otp}`);
+      return res.status(400).json({ message: 'Invalid or expired OTP' });
+    }
 
+    console.log(`OTP verified for ${email}`);
     res.json({ message: 'OTP verified' });
   } catch (err) {
     console.error('Verify OTP error:', err);
@@ -260,20 +279,40 @@ router.post('/verify-otp', async (req, res) => {
 router.post('/reset-password', async (req, res) => {
   try {
     const { email, otp, newPassword } = req.body;
+    console.log(`Reset password attempt for ${email}, OTP: ${otp}, newPassword: ${newPassword}`);
+    if (!passwordRegex.test(newPassword)) {
+      console.log(`Invalid password for ${email}: Must be at least 6 characters with one letter and one number`);
+      return res.status(400).json({ message: 'Password must be at least 6 characters with at least one letter and one number' });
+    }
+
     const user = await User.findOne({
       email,
       resetPasswordOTP: otp,
       resetPasswordExpires: { $gt: Date.now() },
     });
-    if (!user) return res.status(400).json({ message: 'Invalid or expired OTP' });
+    if (!user) {
+      console.log(`Invalid or expired OTP for ${email}: ${otp}`);
+      return res.status(400).json({ message: 'Invalid or expired OTP' });
+    }
 
     const salt = await bcrypt.genSalt(10);
-    user.password = await bcrypt.hash(newPassword, salt);
+    const hashedPassword = await bcrypt.hash(newPassword, salt);
+    user.password = hashedPassword;
     user.resetPasswordOTP = undefined;
     user.resetPasswordExpires = undefined;
+    user.refreshToken = undefined; // Clear refresh token to avoid session issues
     await user.save();
 
-    console.log(`Password reset for ${email}`);
+    console.log(`Password reset for ${email}, new hashed password: ${hashedPassword}`);
+
+    const emailContent = `
+      <h1>Password Reset Successful</h1>
+      <p>Your password has been successfully reset.</p>
+      <p>You can now log in with your new password.</p>
+    `;
+    await sendEmail({ to: email, subject: 'Password Reset Confirmation', html: emailContent });
+    console.log(`Confirmation email sent to ${email}`);
+
     res.json({ message: 'Password reset successfully' });
   } catch (err) {
     console.error('Reset password error:', err);

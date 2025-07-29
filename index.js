@@ -8,6 +8,7 @@ import servicesRoutes from './routes/services.js';
 import bookingsRoutes from './routes/bookings.js';
 import paymentsRoutes from './routes/payments.js';
 import reviewsRoutes from './routes/reviews.js';
+import providerRoutes from './routes/providers.js'; // Add provider route
 
 dotenv.config();
 
@@ -23,6 +24,7 @@ app.use('/api/services', servicesRoutes);
 app.use('/api/bookings', bookingsRoutes);
 app.use('/api/payments', paymentsRoutes);
 app.use('/api/reviews', reviewsRoutes);
+app.use('/api/provider', providerRoutes); // Mount provider route
 
 mongoose.connect(process.env.MONGO_URI, { useNewUrlParser: true, useUnifiedTopology: true })
   .then(() => console.log('MongoDB connected'))

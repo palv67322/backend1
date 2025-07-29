@@ -1,27 +1,24 @@
 import express from 'express';
+import multer from 'multer';
+import { storage } from '../utils/firebase.js';
+import { ref, uploadBytes, getDownloadURL } from 'firebase/storage';
 import Provider from '../models/Provider.js';
 import Service from '../models/Service.js';
 import auth from '../middleware/auth.js';
-import multer from 'multer';
-import path from 'path';
-import fs from 'fs';
 
 const router = express.Router();
 
-// Multer configuration for photo upload
-const storage = multer.diskStorage({
-  destination: (req, file, cb) => {
-    const uploadPath = path.join(process.cwd(), 'uploads');
-    if (!fs.existsSync(uploadPath)) {
-      fs.mkdirSync(uploadPath);
+// Configure multer for in-memory storage
+const upload = multer({
+  storage: multer.memoryStorage(),
+  limits: { fileSize: 5 * 1024 * 1024 }, // Max 5MB
+  fileFilter: (req, file, cb) => {
+    if (!file.mimetype.startsWith('image/')) {
+      return cb(new Error('Only image files are allowed'));
     }
-    cb(null, uploadPath);
-  },
-  filename: (req, file, cb) => {
-    cb(null, `${Date.now()}-${file.originalname}`);
-  },
+    cb(null, true);
+  }
 });
-const upload = multer({ storage });
 
 // Get all providers with optional search and location filters
 router.get('/', async (req, res) => {
@@ -63,6 +60,28 @@ router.get('/:providerId', async (req, res) => {
   }
 });
 
+// Get provider by user ID
+router.get('/user/:userId', auth, async (req, res) => {
+  try {
+    const userId = req.params.userId;
+    if (req.user.id !== userId) {
+      console.log(`Unauthorized access attempt by user ${req.user.id} for provider ${userId}`);
+      return res.status(403).json({ message: 'Unauthorized' });
+    }
+
+    const provider = await Provider.findOne({ user: userId }).populate('services').populate('reviews');
+    if (!provider) {
+      console.log(`Provider not found for user ${userId}`);
+      return res.status(404).json({ message: 'Provider not found' });
+    }
+
+    res.json(provider);
+  } catch (err) {
+    console.error('Get provider error:', err);
+    res.status(500).json({ message: 'Server error: ' + err.message });
+  }
+});
+
 // Get provider profile
 router.get('/profile', auth, async (req, res) => {
   try {
@@ -88,6 +107,7 @@ router.put('/profile', auth, async (req, res) => {
         name: req.user.name,
         service: req.body.service,
         location: req.body.location,
+        photo: null // Default to null for Firebase
       });
     } else {
       provider.service = req.body.service || provider.service;
@@ -105,17 +125,38 @@ router.put('/profile', auth, async (req, res) => {
 // Upload provider photo
 router.post('/upload-photo', auth, upload.single('photo'), async (req, res) => {
   try {
-    const provider = await Provider.findOne({ user: req.user.id });
+    const userId = req.user.id;
+    console.log(`Profile picture upload attempt for user ${userId}`);
+
+    const provider = await Provider.findOne({ user: userId });
     if (!provider) {
-      console.log(`Provider not found for user ${req.user.id}`);
+      console.log(`Provider not found for user ${userId}`);
       return res.status(404).json({ message: 'Provider profile not found' });
     }
-    provider.photo = `/uploads/${req.file.filename}`;
+
+    if (!req.file) {
+      console.log(`No file uploaded for user ${userId}`);
+      return res.status(400).json({ message: 'No file uploaded' });
+    }
+
+    // Create a unique filename using userId and timestamp
+    const fileName = `profile_pictures/${userId}/${Date.now()}_${req.file.originalname}`;
+    const storageRef = ref(storage, fileName);
+
+    // Upload to Firebase Storage
+    const metadata = { contentType: req.file.mimetype };
+    await uploadBytes(storageRef, req.file.buffer, metadata);
+    const downloadURL = await getDownloadURL(storageRef);
+    console.log(`File uploaded to Firebase: ${downloadURL}`);
+
+    // Update provider's photo URL
+    provider.photo = downloadURL;
     await provider.save();
-    console.log(`Photo uploaded for provider ${provider._id}`);
-    res.json({ photo: provider.photo });
+    console.log(`Provider photo updated for user ${userId}: ${downloadURL}`);
+
+    res.json({ message: 'Profile picture uploaded successfully', photo: downloadURL });
   } catch (err) {
-    console.error('Upload photo error:', err);
+    console.error('Profile picture upload error:', err);
     res.status(500).json({ message: 'Server error: ' + err.message });
   }
 });
